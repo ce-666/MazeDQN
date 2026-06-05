@@ -11,32 +11,68 @@ from replay_buffer import ReplayBuffer
 
 class DQN(nn.Module):
     """
-    Simple fully-connected Deep Q-Network.
+    Dueling DQN 网络。
 
-    Input: flattened MiniGrid observation vector.
-    Output: Q-values for all actions.
+    输入：展平后的 MiniGrid 状态向量。
+    输出：每个动作对应的 Q 值。
+
+    Dueling 结构将网络拆成两条分支：
+    - value_stream：估计当前状态本身的价值 V(s)
+    - advantage_stream：估计每个动作相对于平均水平的优势 A(s, a)
+
+    最后合成：
+        Q(s, a) = V(s) + A(s, a) - mean(A(s, a))
     """
 
     def __init__(self, state_dim: int, action_dim: int) -> None:
         super().__init__()
-        self.net = nn.Sequential(
+
+        self.feature_layer = nn.Sequential(
             nn.Linear(state_dim, 128),
             nn.ReLU(),
+            nn.Linear(128, 128),
+            nn.ReLU(),
+        )
+
+        self.value_stream = nn.Sequential(
+            nn.Linear(128, 128),
+            nn.ReLU(),
+            nn.Linear(128, 1),
+        )
+
+        self.advantage_stream = nn.Sequential(
             nn.Linear(128, 128),
             nn.ReLU(),
             nn.Linear(128, action_dim),
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.net(x)
+        features = self.feature_layer(x)
+        value = self.value_stream(features)
+        advantage = self.advantage_stream(features)
+
+        q_values = value + advantage - advantage.mean(dim=1, keepdim=True)
+        return q_values
 
 
 class DQNAgent:
     """
-    DQN agent with:
-    - epsilon-greedy exploration
-    - replay buffer
-    - target network
+    Dueling Double DQN 智能体。
+
+    主要功能：
+    - epsilon-greedy 探索策略
+    - 经验回放池 Replay Buffer
+    - 目标网络 Target Network
+    - Double DQN 更新目标
+    - Dueling DQN 网络结构
+
+    Double DQN：
+    使用 policy_net 选择下一步动作，使用 target_net 评估该动作价值，减少 Q 值高估。
+
+    Dueling DQN：
+    将 Q 值拆成状态价值 V(s) 和动作优势 A(s, a)，让模型更容易判断“当前位置本身好不好”。
+
+    这两者结合后，可以提升复杂迷宫环境下训练的稳定性。
     """
 
     def __init__(
@@ -44,7 +80,7 @@ class DQNAgent:
         state_dim: int,
         action_dim: int,
         device: torch.device,
-        learning_rate: float = 1e-3,
+        learning_rate: float = 5e-4,
         gamma: float = 0.99,
         buffer_capacity: int = 50_000,
         batch_size: int = 64,
@@ -121,7 +157,20 @@ class DQNAgent:
         current_q = self.policy_net(states).gather(1, actions)
 
         with torch.no_grad():
-            next_q = self.target_net(next_states).max(dim=1, keepdim=True)[0]
+            # Double DQN 核心思想：
+            # 1. 使用 policy_net 选择下一状态下 Q 值最大的动作
+            # 2. 使用 target_net 评估该动作对应的 Q 值
+            #
+            # 普通 DQN：
+            #     next_q = max(target_net(next_state))
+            #
+            # Double DQN：
+            #     next_action = argmax(policy_net(next_state))
+            #     next_q = target_net(next_state, next_action)
+            #
+            # 这样能够降低 max 操作导致的 Q 值高估，使训练过程更加稳定。
+            next_actions = self.policy_net(next_states).argmax(dim=1, keepdim=True)
+            next_q = self.target_net(next_states).gather(1, next_actions)
             target_q = rewards + self.gamma * next_q * (1.0 - dones)
 
         loss = self.loss_fn(current_q, target_q)

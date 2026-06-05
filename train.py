@@ -11,25 +11,25 @@ from plot_utils import plot_rewards, plot_success_rate
 
 
 # 训练使用的 MiniGrid 环境名称
-ENV_NAME = "MiniGrid-SimpleCrossingS9N1-v0"
+ENV_NAME = "MiniGrid-SimpleCrossingS9N2-v0"
 
 # 总训练轮数：每一轮 episode 表示智能体从起点开始尝试一次寻路
-MAX_EPISODES = 1500
+MAX_EPISODES = 3000
 
 # 每一轮最多允许智能体执行的动作次数，防止智能体无限乱走
-MAX_STEPS_PER_EPISODE = 300
+MAX_STEPS_PER_EPISODE = 200
 
 # 计算成功率时使用的滑动窗口大小，例如最近 100 轮的平均成功率
 SUCCESS_WINDOW = 100
 
 # 提前停止条件：至少训练这么多轮后，才允许提前停止
-MIN_EPISODES_BEFORE_EARLY_STOP = 1000
+MIN_EPISODES_BEFORE_EARLY_STOP = 2000
 
 # 提前停止条件：最近 SUCCESS_WINDOW 轮的成功率达到该阈值
-EARLY_STOP_SUCCESS_RATE = 0.9999
+EARLY_STOP_SUCCESS_RATE = 0.80
 
 # 提前停止条件：最近 SUCCESS_WINDOW 轮的平均奖励达到该阈值
-EARLY_STOP_AVG_REWARD = 1.0
+EARLY_STOP_AVG_REWARD = 0.0
 
 MODELS_DIR = Path("models")
 RESULTS_DIR = Path("results")
@@ -50,12 +50,74 @@ ACTION_NAMES = {
     2: "前进",
 }
 
+# 奖励塑形参数：B 方案 + C 方案。
+# B 方案：鼓励探索新位置，惩罚重复访问。
+# C 方案：使用 BFS 最短路距离判断是否真正接近终点，避免被墙后的目标误导。
+STEP_PENALTY = -0.01          # 每走一步的小惩罚，鼓励更短路径
+TURN_PENALTY = -0.005         # 左转/右转的小惩罚，减少原地转圈
+COLLISION_PENALTY = -0.20     # 前进但位置不变，说明撞墙或撞障碍
+MOVE_REWARD = 0.01            # 首次真正移动到新格子的奖励
+REVISIT_PENALTY = -0.005       # 真正移动到旧格子的惩罚
+CLOSER_REWARD = 0.02          # BFS 最短路距离变短时的奖励
+FARTHER_PENALTY = -0.002       # BFS 最短路距离变长时的惩罚
+NO_PROGRESS_PENALTY = 0.0     # BFS 最短路距离不变时不额外惩罚
+SUCCESS_BONUS = .0           # 到达终点的额外奖励
+TIMEOUT_PENALTY = -2.0        # 超时失败的惩罚
+
 
 def make_env(render_mode=None):
     """创建 MiniGrid 环境，并使用全局观测包装器，让智能体能看到完整迷宫。"""
     env = gym.make(ENV_NAME, render_mode=render_mode)
     env = FullyObsWrapper(env)
     return env
+
+
+def get_goal_distance(env) -> int:
+    """使用 BFS 计算当前位置到终点的真实最短路距离。"""
+    from collections import deque
+
+    agent_pos = tuple(env.unwrapped.agent_pos)
+    grid = env.unwrapped.grid
+
+    goal_pos = None
+    for x in range(grid.width):
+        for y in range(grid.height):
+            obj = grid.get(x, y)
+            if obj is not None and obj.type == "goal":
+                goal_pos = (x, y)
+                break
+        if goal_pos is not None:
+            break
+
+    if goal_pos is None:
+        raise RuntimeError("没有在当前环境中找到 goal 目标位置")
+
+    queue = deque([(agent_pos, 0)])
+    visited = {agent_pos}
+
+    while queue:
+        (x, y), dist = queue.popleft()
+
+        if (x, y) == goal_pos:
+            return dist
+
+        for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+            nx, ny = x + dx, y + dy
+
+            if not (0 <= nx < grid.width and 0 <= ny < grid.height):
+                continue
+
+            if (nx, ny) in visited:
+                continue
+
+            cell = grid.get(nx, ny)
+            if cell is not None and cell.type in ["wall", "lava"]:
+                continue
+
+            visited.add((nx, ny))
+            queue.append(((nx, ny), dist + 1))
+
+    return 999
 
 
 def get_device() -> torch.device:
@@ -103,7 +165,7 @@ def train() -> None:
         state_dim=state_dim,
         action_dim=action_dim,
         device=device,
-        learning_rate=1e-3,
+        learning_rate=3e-4,
         gamma=0.99,
         buffer_capacity=50_000,
         batch_size=64,
@@ -128,34 +190,58 @@ def train() -> None:
         total_reward = 0.0
         success = False
         losses = []
+        visited_positions = {tuple(env.unwrapped.agent_pos)}
 
         for step in range(MAX_STEPS_PER_EPISODE):
             agent_action = agent.select_action(state, training=True)
             env_action = USEFUL_ACTIONS[agent_action]
 
-            # 记录执行动作前的位置，用于判断是否撞墙。
+            # 记录执行动作前的位置和距离，用于判断是否撞墙、是否接近目标。
             old_pos = tuple(env.unwrapped.agent_pos)
+            old_distance = get_goal_distance(env)
+
             next_obs, reward, terminated, truncated, info = env.step(env_action)
+
             new_pos = tuple(env.unwrapped.agent_pos)
+            new_distance = get_goal_distance(env)
             done = terminated or truncated
 
             next_state = preprocess_observation(next_obs)
 
-            # 奖励塑形：MiniGrid 原始奖励比较稀疏
-            # 这里给每一步增加小惩罚，鼓励智能体用更短路径到达目标。
-            # 如果智能体选择“前进”但位置没有变化，说明前方是墙或障碍物，需要额外惩罚，避免学成无脑撞墙策略。
+            # B+C 奖励塑形：
+            # B：鼓励探索新位置，惩罚重复访问；
+            # C：用 BFS 最短路距离判断是否真正接近终点。
             shaped_reward = float(reward)
-            shaped_reward -= 0.01
+            shaped_reward += STEP_PENALTY
+
+            if new_distance < old_distance:
+                shaped_reward += CLOSER_REWARD
+            elif new_distance > old_distance:
+                shaped_reward += FARTHER_PENALTY
+            else:
+                shaped_reward += NO_PROGRESS_PENALTY
+
+            # 只有真正执行“前进”并且位置发生变化时，才判断新格子/旧格子。
+            # 左转和右转不会改变位置，不能按“重复访问”惩罚，否则会错误打击必要转向。
+            if env_action == 2 and old_pos != new_pos:
+                if new_pos not in visited_positions:
+                    shaped_reward += MOVE_REWARD
+                    visited_positions.add(new_pos)
+                else:
+                    shaped_reward += REVISIT_PENALTY
 
             if env_action == 2 and old_pos == new_pos and not terminated:
-                shaped_reward -= 0.20
+                shaped_reward += COLLISION_PENALTY
+
+            if env_action in [0, 1]:
+                shaped_reward += TURN_PENALTY
 
             if terminated and reward > 0:
-                shaped_reward += 1.0
+                shaped_reward += SUCCESS_BONUS
                 success = True
 
             if truncated:
-                shaped_reward -= 0.1
+                shaped_reward += TIMEOUT_PENALTY
 
             # 将本次交互经验存入经验回放池
             agent.store_transition(state, agent_action, shaped_reward, next_state, done)
