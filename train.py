@@ -11,25 +11,25 @@ from plot_utils import plot_rewards, plot_success_rate
 
 
 # 训练使用的 MiniGrid 环境名称
-ENV_NAME = "MiniGrid-SimpleCrossingS9N2-v0"
+ENV_NAME = "MiniGrid-SimpleCrossingS9N3-v0"
 
 # 总训练轮数：每一轮 episode 表示智能体从起点开始尝试一次寻路
-MAX_EPISODES = 3000
+MAX_EPISODES = 5000
 
 # 每一轮最多允许智能体执行的动作次数，防止智能体无限乱走
-MAX_STEPS_PER_EPISODE = 200
+MAX_STEPS_PER_EPISODE = 300
 
 # 计算成功率时使用的滑动窗口大小，例如最近 100 轮的平均成功率
 SUCCESS_WINDOW = 100
 
 # 提前停止条件：至少训练这么多轮后，才允许提前停止
-MIN_EPISODES_BEFORE_EARLY_STOP = 2000
+MIN_EPISODES_BEFORE_EARLY_STOP = 3000
 
 # 提前停止条件：最近 SUCCESS_WINDOW 轮的成功率达到该阈值
-EARLY_STOP_SUCCESS_RATE = 0.80
+EARLY_STOP_SUCCESS_RATE = 0.90
 
 # 提前停止条件：最近 SUCCESS_WINDOW 轮的平均奖励达到该阈值
-EARLY_STOP_AVG_REWARD = 0.0
+EARLY_STOP_AVG_REWARD = 3.0
 
 MODELS_DIR = Path("models")
 RESULTS_DIR = Path("results")
@@ -167,11 +167,11 @@ def train() -> None:
         device=device,
         learning_rate=3e-4,
         gamma=0.99,
-        buffer_capacity=50_000,
+        buffer_capacity=100_000,
         batch_size=64,
         epsilon_start=1.0,
         epsilon_end=0.05,
-        epsilon_decay=0.999,
+        epsilon_decay=0.9995,
         target_update_freq=100,
     )
 

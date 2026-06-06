@@ -20,6 +20,8 @@ class DQN(nn.Module):
     - value_stream：估计当前状态本身的价值 V(s)
     - advantage_stream：估计每个动作相对于平均水平的优势 A(s, a)
 
+    本实验中将隐藏层维度设置为 256，以增强模型在 S9N3 等复杂迷宫中的表达能力。
+
     最后合成：
         Q(s, a) = V(s) + A(s, a) - mean(A(s, a))
     """
@@ -27,23 +29,25 @@ class DQN(nn.Module):
     def __init__(self, state_dim: int, action_dim: int) -> None:
         super().__init__()
 
+        hidden_dim = 256
+
         self.feature_layer = nn.Sequential(
-            nn.Linear(state_dim, 128),
+            nn.Linear(state_dim, hidden_dim),
             nn.ReLU(),
-            nn.Linear(128, 128),
+            nn.Linear(hidden_dim, hidden_dim),
             nn.ReLU(),
         )
 
         self.value_stream = nn.Sequential(
-            nn.Linear(128, 128),
+            nn.Linear(hidden_dim, hidden_dim),
             nn.ReLU(),
-            nn.Linear(128, 1),
+            nn.Linear(hidden_dim, 1),
         )
 
         self.advantage_stream = nn.Sequential(
-            nn.Linear(128, 128),
+            nn.Linear(hidden_dim, hidden_dim),
             nn.ReLU(),
-            nn.Linear(128, action_dim),
+            nn.Linear(hidden_dim, action_dim),
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
