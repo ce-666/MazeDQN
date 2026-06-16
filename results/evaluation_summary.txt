@@ -1,0 +1,13 @@
+Independent Evaluation Summary
+Model: models/best_model.pth
+Environment: MiniGrid-SimpleCrossingS9N3-v0
+Base seed: 2026
+Seed policy: episode_seed = base_seed + episode_index
+Max steps per episode: 300
+
+Mode	Episodes	Success	SuccessRate	AvgReward	AvgSteps	AvgEpisodeLength	Terminated	Truncated	AssistedActions
+pure_greedy	100	66	0.6600	0.6304	112.64	112.64	66	34	0
+assisted_rules	100	84	0.8400	0.7983	63.01	63.01	84	16	649
+
+说明：pure_greedy 为 epsilon=0 的纯模型贪心策略，不使用 test.py 中的防卡住辅助规则；
+assisted_rules 在纯贪心基础上加入连续撞墙/原地卡住时的临时转向或前进规则，仅作对照。

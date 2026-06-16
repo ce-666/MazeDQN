@@ -27,13 +27,14 @@ MazeDQN/
 ├── replay_buffer.py  # 经验回放池
 ├── plot_utils.py     # 奖励曲线 / 成功率曲线绘制
 ├── test.py           # 模型测试与可视化
+├── evaluate.py       # 独立批量测试，输出测试统计结果
 ├── check_env.py      # 环境连通性检查
 ├── checkpoints/      # 各阶段训练结果
 │   ├── N1/           # 基础 DQN，S9N1 环境
 │   ├── N2/           # Double DQN + 初步奖励塑形，S9N2 环境
 │   └── N3/           # Dueling Double DQN + BFS 奖励塑形，S9N3 环境
 ├── models/           # 通用模型文件
-├── results/          # 训练曲线图片
+├── results/          # 训练曲线与独立测试结果
 └── README.md
 ```
 
@@ -60,11 +61,29 @@ python train.py
 # 测试
 python test.py
 
+# 独立批量测试（无 human 渲染，默认 100 回合）
+python evaluate.py \
+    --model models/best_model.pth \
+    --episodes 100 \
+    --seed 2026
+
 # 环境检查
 python check_env.py
 ```
 
 训练超参数可在 `train.py` 中修改。
+
+`evaluate.py` 会使用与训练一致的 `MiniGrid-SimpleCrossingS9N3-v0`、`FullyObsWrapper` 和状态预处理方式，测试阶段设置 `epsilon=0`，不使用训练时的随机探索。脚本默认同时输出两组结果：
+
+- `pure_greedy`：纯模型贪心策略，不使用 `test.py` 中的防撞墙/防卡住辅助规则；
+- `assisted_rules`：加入连续撞墙或原地卡住时的临时转向/前进规则，仅作为对照。
+
+测试结果保存到：
+
+```text
+results/evaluation_summary.txt
+results/evaluation_summary.json
+```
 
 ## 实验结果
 
@@ -75,6 +94,17 @@ python check_env.py
 | N3 | S9N3 | Dueling Double DQN + BFS 奖励塑形 | ≈ 0.99 |
 
 训练曲线和模型文件保存在 `checkpoints/` 目录下。
+
+## 独立测试结果
+
+独立测试使用 `models/best_model.pth`，在 100 个随机种子回合上评估。训练中的“最近 100 轮滑动成功率”属于训练过程指标，不等同于独立测试成功率。
+
+| 测试模式 | 环境 | 回合数 | 成功次数 | 成功率 | 平均累计奖励 | 平均步数 | terminated | truncated |
+|----------|------|--------|----------|--------|--------------|----------|------------|-----------|
+| pure_greedy | S9N3 | 100 | 66 | 66.00% | 0.6304 | 112.64 | 66 | 34 |
+| assisted_rules | S9N3 | 100 | 84 | 84.00% | 0.7983 | 63.01 | 84 | 16 |
+
+报告中优先采用 `pure_greedy` 结果衡量模型自身性能；`assisted_rules` 只用于说明人工辅助规则对测试表现的影响。
 
 ## 版本标签
 
